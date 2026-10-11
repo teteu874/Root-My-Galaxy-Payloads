@@ -1,0 +1,198 @@
+mkdir -p build/r9s-G990EXXSNHZF5
+/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang -fPIC -O2 -g0 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Isrc -DTARGET_HEADER='"targets/r9s-G990EXXSNHZF5/target.h"'  src/main.c src/util.c src/slide.c src/fops.c src/pipe.c src/root.c src/preload.c \
+  -shared -pthread -o build/r9s-G990EXXSNHZF5/cve-2026-43499
+/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang -DAPP_PAYLOAD=1  -fPIC -O2 -g0 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Isrc -DTARGET_HEADER='"targets/r9s-G990EXXSNHZF5/target.h"'  src/main.c src/util.c src/slide_app.c src/fops.c src/pipe.c src/root.c src/preload.c \
+  -shared -pthread -o build/r9s-G990EXXSNHZF5/cve-2026-43499-app.so
+In file included from src/main.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/util.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+src/util.c:10:34: error: use of undeclared identifier 'S918_RECLAIM_SOCKET_PAIRS'
+   10 | static int controlled_reclaim_sv[S918_RECLAIM_SOCKET_PAIRS - 1][2];
+      |                                  ^~~~~~~~~~~~~~~~~~~~~~~~~
+src/util.c:1077:30: error: use of undeclared identifier 'S918_KSNITCH_HINT_COLLISIONS'
+ 1077 |   size_t collisions = hint ? S918_KSNITCH_HINT_COLLISIONS
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/util.c:1078:30: error: use of undeclared identifier 'S918_KSNITCH_FULL_COLLISIONS'
+ 1078 |                            : S918_KSNITCH_FULL_COLLISIONS;
+      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/util.c:1119:22: error: use of undeclared identifier 'S918_KSNITCH_FULL_COLLISIONS'
+ 1119 |         collisions = S918_KSNITCH_FULL_COLLISIONS;
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/util.c:1131:22: error: use of undeclared identifier 'S918_KSNITCH_FULL_COLLISIONS'
+ 1131 |         collisions = S918_KSNITCH_FULL_COLLISIONS;
+      |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/util.c:1171:34: error: use of undeclared identifier 'S918_PAGE_SCAN_MAX'
+ 1171 |   const size_t opaque_capacity = S918_PAGE_SCAN_MAX * batch;
+      |                                  ^~~~~~~~~~~~~~~~~~
+src/util.c:1194:11: error: use of undeclared identifier 'S918_PAGE_SCAN_MAX'
+ 1194 |           S918_PAGE_SCAN_MAX, batch, S918_DMA32_SKIP_SLABS);
+      |           ^~~~~~~~~~~~~~~~~~
+src/util.c:1194:38: error: use of undeclared identifier 'S918_DMA32_SKIP_SLABS'
+ 1194 |           S918_PAGE_SCAN_MAX, batch, S918_DMA32_SKIP_SLABS);
+      |                                      ^~~~~~~~~~~~~~~~~~~~~
+src/util.c:1197:19: error: use of undeclared identifier 'S918_PAGE_SCAN_MAX'
+ 1197 |        attempt <= S918_PAGE_SCAN_MAX && !result; ++attempt) {
+      |                   ^~~~~~~~~~~~~~~~~~
+src/util.c:1218:21: error: use of undeclared identifier 'S918_DMA32_SKIP_SLABS'
+ 1218 |       size_t refs = S918_DMA32_SKIP_SLABS * batch;
+      |                     ^~~~~~~~~~~~~~~~~~~~~
+src/util.c:1300:29: error: use of undeclared identifier 'S918_PAGE_SCAN_MAX'
+ 1300 |                group_count, S918_PAGE_SCAN_MAX);
+      |                             ^~~~~~~~~~~~~~~~~~
+src/util.c:1345:31: error: use of undeclared identifier 'S918_TRIGGER_SLABS'
+ 1345 |   const size_t trigger_refs = S918_TRIGGER_SLABS * batch;
+      |                               ^~~~~~~~~~~~~~~~~~
+src/util.c:1360:11: error: use of undeclared identifier 'S918_TRIGGER_SLABS'
+ 1360 |           S918_TRIGGER_SLABS, trigger_refs, state->s2, sched_getcpu());
+      |           ^~~~~~~~~~~~~~~~~~
+src/util.c:1365:32: error: use of undeclared identifier 'S918_TRIGGER_SLABS'
+ 1365 |   for (size_t page = 0; page < S918_TRIGGER_SLABS; ++page) {
+      |                                ^~~~~~~~~~~~~~~~~~
+src/util.c:1371:11: error: use of undeclared identifier 'S918_TRIGGER_SLABS'
+ 1371 |           S918_TRIGGER_SLABS,
+      |           ^~~~~~~~~~~~~~~~~~
+src/util.c:1372:26: error: use of undeclared identifier 'S918_TRIGGER_SLABS'
+ 1372 |           trigger_refs - S918_TRIGGER_SLABS + 1, sched_getcpu());
+      |                          ^~~~~~~~~~~~~~~~~~
+src/util.c:1916:16: error: use of undeclared identifier 'S918_SKB_SNDBUF'
+ 1916 |   int sndbuf = S918_SKB_SNDBUF;
+      |                ^~~~~~~~~~~~~~~
+src/util.c:1957:36: error: use of undeclared identifier 'S918_RECLAIM_SOCKET_PAIRS'
+ 1957 |   for (size_t pair = 0; pair + 1 < S918_RECLAIM_SOCKET_PAIRS; ++pair) {
+      |                                    ^~~~~~~~~~~~~~~~~~~~~~~~~
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+In file included from src/slide_app.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/fops.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/pipe.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+src/pipe.c:4:10: error: expected "FILENAME" or <FILENAME>
+    4 | #include P0_FINGERPRINT_HEADER
+      |          ^
+src/pipe.c:1206:45: warning: declaration of 'struct p0_fingerprint' will not be visible outside of this function [-Wvisibility]
+ 1206 |     const unsigned char *page, const struct p0_fingerprint *fingerprint) {
+      |                                             ^
+src/pipe.c:1208:34: error: use of undeclared identifier 'P0_FINGERPRINT_WORDS'
+ 1208 |   for (size_t index = 0; index < P0_FINGERPRINT_WORDS; index++) {
+      |                                  ^~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1210:27: error: use of undeclared identifier 'p0_fingerprint_offsets'; did you mean 'p0_fingerprint_score'?
+ 1210 |     memcpy(&value, page + p0_fingerprint_offsets[index], sizeof(value));
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+      |                           p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1210:27: error: subscript of pointer to function type 'int (const unsigned char *, const struct p0_fingerprint *)'
+ 1210 |     memcpy(&value, page + p0_fingerprint_offsets[index], sizeof(value));
+      |                           ^~~~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1215:29: error: incomplete definition of type 'const struct p0_fingerprint'
+ 1215 |     if (value == fingerprint->words[index]) {
+      |                  ~~~~~~~~~~~^
+src/pipe.c:1206:45: note: forward declaration of 'struct p0_fingerprint'
+ 1206 |     const unsigned char *page, const struct p0_fingerprint *fingerprint) {
+      |                                             ^
+src/pipe.c:1239:7: error: use of undeclared identifier 'p0_fingerprint_offsets'; did you mean 'p0_fingerprint_score'?
+ 1239 |       p0_fingerprint_offsets[P0_FINGERPRINT_WORDS - 1] + sizeof(uint64_t);
+      |       ^~~~~~~~~~~~~~~~~~~~~~
+      |       p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1239:30: error: use of undeclared identifier 'P0_FINGERPRINT_WORDS'
+ 1239 |       p0_fingerprint_offsets[P0_FINGERPRINT_WORDS - 1] + sizeof(uint64_t);
+      |                              ^~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1261:28: error: use of undeclared identifier 'P0_FINGERPRINT_WORDS'
+ 1261 |     uint64_t sampled_words[P0_FINGERPRINT_WORDS];
+      |                            ^~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1262:34: error: use of undeclared identifier 'P0_FINGERPRINT_WORDS'
+ 1262 |     for (size_t word = 0; word < P0_FINGERPRINT_WORDS; word++) {
+      |                                  ^~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1263:43: error: use of undeclared identifier 'p0_fingerprint_offsets'; did you mean 'p0_fingerprint_score'?
+ 1263 |       memcpy(&sampled_words[word], page + p0_fingerprint_offsets[word],
+      |                                           ^~~~~~~~~~~~~~~~~~~~~~
+      |                                           p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1263:43: error: subscript of pointer to function type 'int (const unsigned char *, const struct p0_fingerprint *)'
+ 1263 |       memcpy(&sampled_words[word], page + p0_fingerprint_offsets[word],
+      |                                           ^~~~~~~~~~~~~~~~~~~~~~
+src/pipe.c:1278:25: error: use of undeclared identifier 'p0_fingerprints'; did you mean 'p0_fingerprint_score'?
+ 1278 |          index < sizeof(p0_fingerprints) / sizeof(p0_fingerprints[0]);
+      |                         ^~~~~~~~~~~~~~~
+      |                         p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1278:51: error: use of undeclared identifier 'p0_fingerprints'; did you mean 'p0_fingerprint_score'?
+ 1278 |          index < sizeof(p0_fingerprints) / sizeof(p0_fingerprints[0]);
+      |                                                   ^~~~~~~~~~~~~~~
+      |                                                   p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1278:51: error: subscript of pointer to function type 'int (const unsigned char *, const struct p0_fingerprint *)'
+ 1278 |          index < sizeof(p0_fingerprints) / sizeof(p0_fingerprints[0]);
+      |                                                   ^~~~~~~~~~~~~~~
+src/pipe.c:1280:47: error: use of undeclared identifier 'p0_fingerprints'; did you mean 'p0_fingerprint_score'?
+ 1280 |       int score = p0_fingerprint_score(page, &p0_fingerprints[index]);
+      |                                               ^~~~~~~~~~~~~~~
+      |                                               p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1280:47: error: subscript of pointer to function type 'int (const unsigned char *, const struct p0_fingerprint *)'
+ 1280 |       int score = p0_fingerprint_score(page, &p0_fingerprints[index]);
+      |                                               ^~~~~~~~~~~~~~~
+src/pipe.c:1284:22: error: use of undeclared identifier 'p0_fingerprints'; did you mean 'p0_fingerprint_score'?
+ 1284 |         best_slide = p0_fingerprints[index].slide;
+      |                      ^~~~~~~~~~~~~~~
+      |                      p0_fingerprint_score
+src/pipe.c:1205:12: note: 'p0_fingerprint_score' declared here
+ 1205 | static int p0_fingerprint_score(
+      |            ^
+src/pipe.c:1284:22: error: subscript of pointer to function type 'int (const unsigned char *, const struct p0_fingerprint *)'
+ 1284 |         best_slide = p0_fingerprints[index].slide;
+      |                      ^~~~~~~~~~~~~~~
+1 warning and 19 errors generated.
+In file included from src/root.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/preload.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+make: *** [Makefile:104: build/r9s-G990EXXSNHZF5/cve-2026-43499-app.so] Error 1

@@ -1,0 +1,53 @@
+mkdir -p build/r9s-G990EXXSNHZF5
+/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang -fPIC -O2 -g0 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Isrc -DTARGET_HEADER='"targets/r9s-G990EXXSNHZF5/target.h"'  src/main.c src/util.c src/slide.c src/fops.c src/pipe.c src/root.c src/preload.c \
+  -shared -pthread -o build/r9s-G990EXXSNHZF5/cve-2026-43499
+In file included from src/main.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/util.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/slide.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/fops.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/pipe.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/root.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+In file included from src/preload.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:278:2: error: #endif without #if
+  278 | #endif
+      |  ^
+1 error generated.
+make: *** [Makefile:100: build/r9s-G990EXXSNHZF5/cve-2026-43499] Error 1

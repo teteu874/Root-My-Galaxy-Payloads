@@ -1,0 +1,55 @@
+mkdir -p build/r9s-G990EXXSNHZF5
+/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang -fPIC -O2 -g0 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Isrc -DTARGET_HEADER='"targets/r9s-G990EXXSNHZF5/target.h"'  src/main.c src/util.c src/slide.c src/fops.c src/pipe.c src/root.c src/preload.c \
+  -shared -pthread -o build/r9s-G990EXXSNHZF5/cve-2026-43499
+/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang -DAPP_PAYLOAD=1  -fPIC -O2 -g0 -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare -Isrc -DTARGET_HEADER='"targets/r9s-G990EXXSNHZF5/target.h"'  src/main.c src/util.c src/slide_app.c src/fops.c src/pipe.c src/root.c src/preload.c \
+  -shared -pthread -o build/r9s-G990EXXSNHZF5/cve-2026-43499-app.so
+In file included from src/main.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/util.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/slide_app.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/fops.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/pipe.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/root.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+In file included from src/preload.c:1:
+In file included from src/common.h:6:
+In file included from src/offset.h:5:
+src/targets/r9s-G990EXXSNHZF5/target.h:98:2: error: stack writer must be set by the build
+   98 | #error stack writer must be set by the build
+      |  ^
+1 error generated.
+make: *** [Makefile:107: build/r9s-G990EXXSNHZF5/cve-2026-43499-app.so] Error 1
